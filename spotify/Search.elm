@@ -16,19 +16,22 @@ import Signal exposing (message,forwardTo,Address)
 
 
 type alias Model =
-    { query : String
+    { queryText : String
+    , queryType : String
     , answers : List Answer
+    , loading : Bool
     }
 
 
 type alias Answer =
     { name : String
+    , queryType : String
     }
 
 
 init : (Model, Effects Action)
 init =
-  ( Model "" []
+  ( Model "" "album" [] False
   , Effects.none
   )
 
@@ -36,28 +39,32 @@ init =
 
 -- UPDATE
 
-
 type Action
-    = QueryChange String
-    | Query
+    = QueryTextChange String
+    | QueryTypeChange String
+    | Submit
     | RegisterAnswers (Maybe (List Answer))
-
 
 update : Action -> Model -> (Model, Effects Action)
 update action model =
   case action of
-    QueryChange newQuery ->
-      ( Model newQuery model.answers
+    QueryTextChange newQuery ->
+      ( Model newQuery model.queryType model.answers model.loading
       , Effects.none
       )
 
-    Query ->
-      ( model
-      , search model.query
+    QueryTypeChange newType ->
+      ( Model model.queryText newType model.answers model.loading
+      , Effects.none
+      )
+
+    Submit ->
+      ( { model | loading <- True}
+      , search model.queryText model.queryType
       )
 
     RegisterAnswers maybeAnswers ->
-      ( Model model.query (Maybe.withDefault [] maybeAnswers)
+      ( Model model.queryText model.queryType (Maybe.withDefault [] maybeAnswers) False
       , Effects.none
       )
 
@@ -89,21 +96,27 @@ view address model =
     [ bootstrap
     , containerFluid
         [ inputForm address model
+        , (if model.loading then (text "LOADING") else (text ""))
         , resultsList address model
         ]
     ]
 
 
 inputForm address model =
-  input
+  div []
+  [input
     [ type' "text"
     , placeholder "Search for an album..."
-    , value model.query
-    , onChange address QueryChange
-    , onEnter address Query
-    ]
-    []
-
+    , value model.queryText
+    , onChange address QueryTextChange
+    ] []
+   , select
+   [ onChange address QueryTypeChange ]
+   [ option [value "album"] [text "Album"]
+   , option [value "artist"] [text "Artist"]]
+   , button
+  [ onClick address Submit ]
+  [text "Submit"]]
 
 resultsList address model =
   let
@@ -114,13 +127,12 @@ resultsList address model =
   in
     row (List.map toEntry model.answers)
 
-
 resultView : Answer -> Html
 resultView answer =
   div [class "panel panel-info"]
       [ div
           [class "panel-heading"]
-          [text "Album"]
+          [text answer.queryType]
       , div
           [ class "panel-body"
           , style [("height", "10rem")]
@@ -136,19 +148,19 @@ resultView answer =
 (=>) = (,)
 
 
-search : String -> Effects Action
-search query =
-  Http.get decodeAnswers (searchUrl query)
+search : String -> String -> Effects Action
+search query queryType =
+  Http.get decodeAnswers (searchUrl query queryType)
     |> Task.toMaybe
     |> Task.map RegisterAnswers
     |> Effects.task
 
 
-searchUrl : String -> String
-searchUrl query =
+searchUrl : String -> String -> String
+searchUrl query queryType =
   Http.url "https://api.spotify.com/v1/search"
     [ "q" => query
-    , "type" => "album"
+    , "type" => queryType
     ]
 
 
@@ -156,6 +168,14 @@ decodeAnswers : Json.Decoder (List Answer)
 decodeAnswers =
   let
     albumName =
-      Json.map Answer ("name" := Json.string)
+      Json.map (\n -> Answer n "Album") ("name" := Json.string)
+
+    artistName =
+      Json.map (\n -> Answer n "Artist") ("name" := Json.string)
+
   in
-    (Json.at ["albums", "items"] (Json.list albumName))
+    Json.oneOf
+          [
+           (Json.at ["albums", "items"] (Json.list albumName))
+           ,(Json.at ["artists", "items"] (Json.list artistName))
+          ]
